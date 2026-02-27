@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CardScan – Test OCR</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 2rem;
+      background: #1a1a1a;
+      color: #e0e0e0;
+      min-height: 100vh;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    p { color: #999; margin-bottom: 1.5rem; }
+    .file-row { margin-bottom: 1rem; }
+    .file-row .btn { margin-right: 0.5rem; }
+    .upload-zone {
+      display: block;
+      border: 2px dashed #444;
+      border-radius: 12px;
+      padding: 2rem;
+      text-align: center;
+      background: #252525;
+      margin-bottom: 1.5rem;
+    }
+    .upload-zone:hover, .upload-zone.dragover { border-color: #0a84ff; background: #2a2a2a; }
+    .upload-zone .hint { color: #888; margin: 0 0 1rem 0; }
+    input[type="file"] {
+      position: absolute;
+      width: 0.1px;
+      height: 0.1px;
+      opacity: 0;
+      overflow: hidden;
+      z-index: -1;
+    }
+    .btn {
+      background: #0a84ff;
+      color: #fff;
+      border: none;
+      padding: 0.6rem 1.2rem;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .preview { margin-top: 1rem; }
+    .preview img { max-width: 100%; max-height: 200px; border-radius: 8px; }
+    .spinner {
+      display: inline-block;
+      width: 24px;
+      height: 24px;
+      border: 3px solid #333;
+      border-top-color: #0a84ff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .results {
+      background: #252525;
+      border-radius: 12px;
+      padding: 1.25rem;
+      margin-top: 1.5rem;
+    }
+    .results h2 { font-size: 1.1rem; margin-bottom: 1rem; }
+    .field {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+    .field label { min-width: 120px; color: #888; }
+    .field span { flex: 1; word-break: break-all; }
+    .field .copy { font-size: 0.85rem; padding: 0.25rem 0.5rem; }
+    .raw { font-size: 0.85rem; color: #666; white-space: pre-wrap; margin-top: 1rem; }
+    .error { color: #ff6b6b; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>CardScan</h1>
+  <p>Upload or drop a business card image to extract contact info (OCR + parser).</p>
+
+  <div class="file-row">
+    <input type="file" id="file" accept="image/jpeg,image/png,image/gif,image/webp" />
+    <button type="button" class="btn" id="chooseBtn">Choose image</button>
+    <span id="fileName" style="color:#888;"></span>
+  </div>
+  <div class="upload-zone" id="zone">
+    <p class="hint">Or drop an image here</p>
+    <div class="preview" id="preview"></div>
+  </div>
+
+  <button class="btn" id="scanBtn" disabled>Scan card</button>
+  <span id="status"></span>
+
+  <div class="results" id="results" style="display: none;">
+    <h2>Extracted data</h2>
+    <div id="fields"></div>
+    <div class="raw" id="raw"></div>
+  </div>
+  <div class="error" id="error"></div>
+
+  <script>
+    const zone = document.getElementById('zone');
+    const fileInput = document.getElementById('file');
+    const chooseBtn = document.getElementById('chooseBtn');
+    const fileNameEl = document.getElementById('fileName');
+    const preview = document.getElementById('preview');
+    const scanBtn = document.getElementById('scanBtn');
+    const status = document.getElementById('status');
+    const results = document.getElementById('results');
+    const fieldsEl = document.getElementById('fields');
+    const rawEl = document.getElementById('raw');
+    const errorEl = document.getElementById('error');
+
+    let currentFile = null;
+
+    chooseBtn.addEventListener('click', function() {
+      fileInput.value = '';
+      fileInput.click();
+    });
+
+    fileInput.addEventListener('change', function() {
+      const f = fileInput.files && fileInput.files[0];
+      if (f) setFile(f);
+    });
+    fileInput.addEventListener('input', function() {
+      const f = fileInput.files && fileInput.files[0];
+      if (f) setFile(f);
+    });
+
+    zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('dragover'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+    zone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      zone.classList.remove('dragover');
+      const f = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f && f.type.startsWith('image/')) setFile(f);
+    });
+
+    function setFile(file) {
+      currentFile = file;
+      scanBtn.disabled = false;
+      errorEl.textContent = '';
+      results.style.display = 'none';
+      fileNameEl.textContent = file.name || 'Image selected';
+      preview.innerHTML = '';
+      const img = document.createElement('img');
+      img.src = URL.createObjectURL(file);
+      img.alt = 'Preview';
+      preview.appendChild(img);
+    }
+
+    scanBtn.addEventListener('click', async () => {
+      if (!currentFile) return;
+      scanBtn.disabled = true;
+      status.innerHTML = '<span class="spinner"></span> Scanning…';
+      errorEl.textContent = '';
+      results.style.display = 'none';
+
+      const form = new FormData();
+      form.append('image', currentFile);
+
+      try {
+        const res = await fetch('/api/scan', {
+          method: 'POST',
+          body: form,
+          signal: AbortSignal.timeout(120000),
+        });
+        const text = await res.text();
+        let data;
+        try {
+          data = text ? JSON.parse(text) : {};
+        } catch () {
+          errorEl.textContent = 'Server returned invalid response. ' + (text ? 'Response: ' + text.slice(0, 150) : 'Empty response.');
+          return;
+        }
+        if (!res.ok) throw new Error(data.error || data.message || 'Scan failed');
+        showResults(data);
+      } catch (e) {
+        if (e.name === 'TimeoutError') {
+          errorEl.textContent = 'Scan timed out (first run can take a minute while OCR loads). Try again.';
+        } else {
+          errorEl.textContent = e.message || 'Request failed';
+        }
+      } finally {
+        status.innerHTML = '';
+        scanBtn.disabled = false;
+      }
+    });
+
+    const LABELS = {
+      full_name: 'Name',
+      job_title: 'Title',
+      company: 'Company',
+      email: 'Email',
+      phone_number: 'Phone',
+      website: 'Website',
+      address: 'Address',
+    };
+
+    function showResults(data) {
+      fieldsEl.innerHTML = '';
+      const keys = ['full_name', 'job_title', 'company', 'email', 'phone_number', 'website', 'address'];
+      keys.forEach((key) => {
+        const value = data[key] || '';
+        const div = document.createElement('div');
+        div.className = 'field';
+        div.innerHTML = `
+          <label>${LABELS[key] || key}</label>
+          <span>${escapeHtml(value)}</span>
+          ${value ? `<button class="btn copy" data-copy="${escapeAttr(value)}">Copy</button>` : ''}
+        `;
+        fieldsEl.appendChild(div);
+      });
+      rawEl.textContent = data.raw_text ? 'Raw OCR:\n' + data.raw_text : '';
+      results.style.display = 'block';
+      fieldsEl.querySelectorAll('.copy').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          navigator.clipboard.writeText(btn.dataset.copy);
+          btn.textContent = 'Copied!';
+          setTimeout(() => (btn.textContent = 'Copy'), 1500);
+        });
+      });
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+    function escapeAttr(s) {
+      return s.replace(/"/g, '&quot;');
+    }
+  </script>
+</body>
+</html>
